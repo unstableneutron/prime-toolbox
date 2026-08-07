@@ -1,0 +1,33 @@
+{
+  "name": "@unstableneutron/prime-subagent-fast-mode",
+  "version": "0.1.0",
+  "description": "Default Prime Agent RLM subagents to Fast mode off.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "prime-agent",
+    "subagent",
+    "fast-mode"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/subagent-fast-mode/index.js"
+    ]
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check extensions/subagent-fast-mode/index.js && node --check extensions/subagent-fast-mode/patch.js && node --check tests/patch.test.js"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

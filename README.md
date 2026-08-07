@@ -6,6 +6,7 @@ The repository is a single installable Prime Agent package and a workspace for i
 ## Packages
 
 - [`prime-websearch-parallel`](packages/prime-websearch-parallel): overrides the bundled `websearch` Python skill with Serper and Parallel Search API support.
+- [`prime-subagent-fast-mode`](packages/prime-subagent-fast-mode): defaults RLM subagents to Fast mode off instead of inheriting the parent's service tier.
 
 ## Install
 
