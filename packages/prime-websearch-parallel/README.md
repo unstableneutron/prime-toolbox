@@ -7,6 +7,16 @@ A Python-backed Prime Agent skill that overrides the bundled `websearch` skill w
 
 ## Configuration
 
+Disable Prime's bundled copy in `~/.prime/agent/settings.json`; the packaged override remains enabled and the expected collision warning disappears:
+
+```json
+{
+  "bundledSkills": {
+    "websearch": false
+  }
+}
+```
+
 Set the desired provider explicitly when needed:
 
 ```bash
