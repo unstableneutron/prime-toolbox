@@ -1,0 +1,23 @@
+{
+  "name": "prime-toolbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portable skills and extensions for Prime Agent.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "prime-agent"
+  ],
+  "workspaces": [
+    "packages/*"
+  ],
+  "pi": {
+    "skills": [
+      "./packages/prime-websearch-parallel/skills"
+    ]
+  },
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@unstableneutron/prime-websearch-parallel",
+  "version": "0.1.0",
+  "description": "Portable Serper and Parallel websearch override for Prime Agent.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "prime-agent",
+    "web-search",
+    "parallel"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "cd skills/websearch && uv run python -m unittest discover -s tests -v",
+    "check": "cd skills/websearch && uvx ruff check src tests && uvx ruff format --check src tests"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
