@@ -266,6 +266,7 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Results for query "example query"', output)
         fetch.assert_awaited_once()
         self.assertEqual(fetch.await_args.args[:2], ("example query", "parallel-key"))
+        self.assertEqual(fetch.await_args.kwargs["mode"], "turbo")
 
     async def test_missing_credentials_does_not_attempt_network(self) -> None:
         with patch.dict(
