@@ -7,6 +7,7 @@ The repository is a single installable Prime Agent package and a workspace for i
 
 - [`prime-websearch-parallel`](packages/prime-websearch-parallel): overrides the bundled `websearch` Python skill with Serper and Parallel Search API support.
 - [`prime-fff-repo-search`](packages/prime-fff-repo-search): provides fast repository path and content search through a shared `fff-routerd` service.
+- [`prime-robust-read`](packages/prime-robust-read): provides bounded, format-aware reading for text, notebooks, PDFs, Office/OpenDocument files, RTF, EPUB, and CSV, plus ledger-aware safe mutation.
 - [`prime-subagent-fast-mode`](packages/prime-subagent-fast-mode): defaults RLM subagents to Fast mode off instead of inheriting the parent's service tier.
 
 ## Install
