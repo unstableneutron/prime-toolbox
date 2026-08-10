@@ -1,0 +1,25 @@
+{
+  "name": "@unstableneutron/prime-fff-repo-search",
+  "version": "0.1.0",
+  "description": "Prime Agent Python skill for shared FFF repository search.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "prime-agent",
+    "fff",
+    "repository-search"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "cd skills/fff-repo-search && uv run python -m unittest discover -s tests -v",
+    "test:live": "cd skills/fff-repo-search && FFF_REPO_SEARCH_LIVE_TEST=1 uv run python -m unittest discover -s tests -v",
+    "check": "cd skills/fff-repo-search && uvx ruff check src tests && uvx ruff format --check src tests"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

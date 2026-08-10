@@ -13,7 +13,8 @@
   ],
   "pi": {
     "skills": [
-      "./packages/prime-websearch-parallel/skills"
+      "./packages/prime-websearch-parallel/skills",
+      "./packages/prime-fff-repo-search/skills"
     ],
     "extensions": [
       "./packages/prime-subagent-fast-mode/extensions/subagent-fast-mode/index.js"

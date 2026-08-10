@@ -6,6 +6,7 @@ The repository is a single installable Prime Agent package and a workspace for i
 ## Packages
 
 - [`prime-websearch-parallel`](packages/prime-websearch-parallel): overrides the bundled `websearch` Python skill with Serper and Parallel Search API support.
+- [`prime-fff-repo-search`](packages/prime-fff-repo-search): provides fast repository path and content search through a shared `fff-routerd` service.
 - [`prime-subagent-fast-mode`](packages/prime-subagent-fast-mode): defaults RLM subagents to Fast mode off instead of inheriting the parent's service tier.
 
 ## Install
@@ -35,6 +36,8 @@ Because the toolbox intentionally replaces the bundled `websearch`, disable only
 ```
 
 The packaged `websearch` remains enabled; this setting only removes Prime's lower-precedence bundled copy.
+
+The FFF search skill requires `fff-routerd` on `PATH` or a reachable endpoint in `FFF_ROUTER_MCP_URL`. The router remains a separate machine-wide service so Prime Agent and other clients share the same warm repository indexes.
 
 Credentials are never stored in this repository. See each subpackage for setup.
 
