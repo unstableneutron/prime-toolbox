@@ -54,18 +54,43 @@ export class DetachedCell {
     else this.stdout += chunk;
   }
 
-  /** Undelivered output, marking it delivered. */
-  drain(maxChars) {
+  /**
+   * Undelivered output.
+   *
+   * `consume: true` (the default) marks it delivered, so the next look returns
+   * only newer bytes. `consume: false` leaves the cursors untouched, which lets
+   * a second consumer still receive the same bytes -- see `peek()`.
+   */
+  read(maxChars, { consume = true } = {}) {
     const limit = clampInt(maxChars, 256, 200_000, 16_000);
     const out = this.stdout.slice(this.deliveredOut);
     const err = this.stderr.slice(this.deliveredErr);
-    this.deliveredOut = this.stdout.length;
-    this.deliveredErr = this.stderr.length;
+    if (consume) {
+      this.deliveredOut = this.stdout.length;
+      this.deliveredErr = this.stderr.length;
+    }
     let text = out;
     if (err) text += (text ? "\n" : "") + err;
     if (text.length <= limit) return text;
     // Keep the tail: the end of a long-running cell's output is what matters.
     return `[... ${text.length - limit} earlier chars omitted ...]\n${text.slice(-limit)}`;
+  }
+
+  /** Undelivered output, marking it delivered. */
+  drain(maxChars) {
+    return this.read(maxChars);
+  }
+
+  /**
+   * Undelivered output WITHOUT consuming it.
+   *
+   * The settle notice reads this way: it must never take bytes an in-flight
+   * `ipython_attach` is waiting for, and anything it reports must stay
+   * recoverable by a later attach if the tool call that would have delivered
+   * it was aborted.
+   */
+  peek(maxChars) {
+    return this.read(maxChars, { consume: false });
   }
 }
 

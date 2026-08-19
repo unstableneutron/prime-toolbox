@@ -108,3 +108,14 @@ test("busyResult is an error so the model cannot mistake it for execution", () =
   assert.equal(result.error.ename, "IpythonKernelBusy");
   assert.match(result.stdout, /was NOT executed/);
 });
+
+test("peek returns pending output without consuming it", () => {
+  const registry = new DetachedCellRegistry();
+  const cell = registry.create("code");
+  cell.append("first\n", "stdout");
+
+  assert.equal(cell.peek(), "first\n");
+  assert.equal(cell.peek(), "first\n", "peek must not advance the cursor");
+  assert.equal(cell.drain(), "first\n", "the bytes are still there for a real consumer");
+  assert.equal(cell.peek(), "", "and are gone once actually delivered");
+});

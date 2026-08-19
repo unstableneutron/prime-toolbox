@@ -12,7 +12,7 @@
 import { IpythonKernelProvisioner } from "@earendil-works/pi-coding-agent";
 
 import { createYieldRuntime, installIpythonYield } from "./patch.js";
-import { describeOutcome } from "./attach.js";
+import { createSettleNotice } from "./notice.js";
 import { createAttachTool, createCancelTool } from "./tools.js";
 
 function envNumber(name) {
@@ -38,19 +38,15 @@ export default function ipythonYieldExtension(pi) {
   pi.registerTool(createCancelTool(runtime));
 
   // The wake-up: without this a detached cell would finish silently while the
-  // session sat idle, and the model would never collect its result.
-  runtime.registry.onSettled((cell) => {
-    const tail = cell.drain(2_000);
-    pi.sendMessage(
-      {
-        customType: "ipython-yield:completed",
-        content: [describeOutcome(cell), "", tail || "(no further output)"].join("\n"),
-        display: true,
-        details: { cellId: cell.id, state: cell.state, elapsedMs: cell.elapsedMs },
-      },
-      { triggerTurn: true, deliverAs: "followUp" },
-    );
-  });
+  // session sat idle, and the model would never collect its result. The notice
+  // peeks one macrotask after settlement so it never takes output an in-flight
+  // ipython_attach is waiting for -- see notice.js.
+  runtime.registry.onSettled(
+    createSettleNotice({
+      maxChars: () => runtime.maxChars(),
+      send: (message) => pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" }),
+    }),
+  );
 }
 
 export {
