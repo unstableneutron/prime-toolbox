@@ -12,7 +12,7 @@ from reportlab.lib.pdfencrypt import StandardEncryption
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-from prime_robust_read import ReadLedger, ReadLimits, read
+from guarded_file_ops import FileOps, FileOpsPolicy, ReadLimits
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -23,6 +23,7 @@ class PdfTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        self.files = FileOps(policy=FileOpsPolicy(use_fff=False))
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -43,21 +44,19 @@ class PdfTests(unittest.TestCase):
         return path
 
     def test_text_mixed_and_scanned_pdfs_have_page_level_coverage(self):
-        text = read(self.make_pdf("text.pdf", ["text"]), ledger=ReadLedger(), use_fff=False)
+        text = self.files.read(self.make_pdf("text.pdf", ["text"]))
         self.assertEqual(text.status, "ok", text)
         self.assertEqual(text.pdf["page_count"], 1)
         self.assertIn("Locally extractable", text.content)
         self.assertEqual(text.conversion["backend"], "pdf-inspector")
 
-        scanned = read(self.make_pdf("scanned.pdf", ["image"]), ledger=ReadLedger(), use_fff=False)
+        scanned = self.files.read(self.make_pdf("scanned.pdf", ["image"]))
         self.assertIn(scanned.pdf["classification"], {"scanned", "image_based", "mixed"})
         self.assertEqual(scanned.pdf["pages_needing_ocr"], [1])
         self.assertIn("vision/OCR", scanned.content)
 
-        mixed = read(
+        mixed = self.files.read(
             self.make_pdf("mixed.pdf", ["text", "image"]),
-            ledger=ReadLedger(),
-            use_fff=False,
         )
         self.assertEqual(mixed.pdf["page_count"], 2)
         self.assertIn(2, mixed.pdf["pages_needing_ocr"])
@@ -67,22 +66,18 @@ class PdfTests(unittest.TestCase):
     def test_malformed_and_encrypted_pdfs_are_categorized(self):
         malformed = self.root / "malformed.pdf"
         malformed.write_bytes(b"%PDF-1.7\nbroken")
-        result = read(malformed, ledger=ReadLedger(), use_fff=False)
+        result = self.files.read(malformed)
         self.assertEqual(result.category, "malformed")
 
-        encrypted = read(
+        encrypted = self.files.read(
             self.make_pdf("encrypted.pdf", ["text"], encrypted=True),
-            ledger=ReadLedger(),
-            use_fff=False,
         )
         self.assertEqual(encrypted.category, "encrypted")
 
     def test_pdf_output_uses_normal_line_byte_and_character_budgets(self):
         path = self.make_pdf("bounded.pdf", ["text", "text", "text"])
-        result = read(
+        result = self.files.read(
             path,
-            ledger=ReadLedger(),
-            use_fff=False,
             limits=ReadLimits(max_lines=2, max_bytes=100, max_line_characters=30),
         )
         self.assertLessEqual(len(result.content.splitlines()), 2)
@@ -118,8 +113,8 @@ class PdfTests(unittest.TestCase):
             detect_pdf_bytes=lambda data: processed,
             extract_pages_markdown_bytes=lambda data: pages,
         )
-        with mock.patch("prime_robust_read.pdf.importlib.import_module", return_value=fake):
-            result = read(path, ledger=ReadLedger(), use_fff=False)
+        with mock.patch("guarded_file_ops.pdf.importlib.import_module", return_value=fake):
+            result = self.files.read(path)
         self.assertEqual(result.pdf["classification"], "mixed")
         self.assertEqual(result.pdf["confidence"], 0.91)
         self.assertEqual(result.pdf["pages_with_tables"], [1])
@@ -134,9 +129,9 @@ class PdfTests(unittest.TestCase):
         path = self.root / "missing.pdf"
         path.write_bytes(b"%PDF-1.7 fake")
         with mock.patch(
-            "prime_robust_read.pdf.importlib.import_module", side_effect=ImportError("missing")
+            "guarded_file_ops.pdf.importlib.import_module", side_effect=ImportError("missing")
         ):
-            result = read(path, ledger=ReadLedger(), use_fff=False)
+            result = self.files.read(path)
         self.assertEqual(result.category, "missing_dependency")
         self.assertEqual(result.conversion["dependency"], "pdf-inspector")
 

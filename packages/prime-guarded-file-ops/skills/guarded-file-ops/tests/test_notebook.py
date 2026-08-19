@@ -5,14 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prime_robust_read import ReadLedger, ReadLimits, read
+from guarded_file_ops import FileOps, FileOpsPolicy, ReadLimits
 
 
 class NotebookTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.ledger = ReadLedger()
+        self.files = FileOps(policy=FileOpsPolicy(use_fff=False))
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -20,7 +20,7 @@ class NotebookTests(unittest.TestCase):
     def render(self, notebook, **kwargs):
         path = self.root / "test.ipynb"
         path.write_text(json.dumps(notebook), encoding="utf-8")
-        return read(path, ledger=self.ledger, use_fff=False, **kwargs)
+        return self.files.read(path, **kwargs)
 
     def test_markdown_code_text_error_and_language_fences(self):
         notebook = {
@@ -138,13 +138,13 @@ class NotebookTests(unittest.TestCase):
     def test_malformed_notebooks_fail_safely(self):
         malformed = self.root / "malformed.ipynb"
         malformed.write_text("{not json", encoding="utf-8")
-        result = read(malformed, ledger=self.ledger, use_fff=False)
+        result = self.files.read(malformed)
         self.assertEqual(result.category, "malformed")
         self.assertEqual(result.conversion["backend"], "native")
 
         binary = self.root / "binary.ipynb"
         binary.write_bytes(b"\xff\x00")
-        result = read(binary, ledger=self.ledger, use_fff=False)
+        result = self.files.read(binary)
         self.assertEqual(result.category, "malformed")
 
 

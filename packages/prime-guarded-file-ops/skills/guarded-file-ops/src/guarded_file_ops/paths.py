@@ -72,6 +72,41 @@ class ResolvedPath:
     warnings: list[str] = field(default_factory=list)
 
 
+def prepare_path(
+    path: str | os.PathLike[str],
+    *,
+    root: Path | None = None,
+) -> tuple[str, Path]:
+    """Return the original spelling and an absolute path constrained to ``root``."""
+    raw = os.fspath(path)
+    if not isinstance(raw, str):
+        raise TypeError("path must be a string or path-like object")
+    if not raw or "\x00" in raw:
+        raise ValueError("path must be non-empty and contain no NUL bytes")
+
+    requested = Path(raw).expanduser()
+    if not requested.is_absolute():
+        requested = (root or Path.cwd()) / requested
+    try:
+        lexical = requested.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise PathResolutionError(str(exc), category="invalid_path") from exc
+    if root is not None and not lexical.is_relative_to(root):
+        raise PathResolutionError(
+            f"Path escapes the configured root {root}: {raw}",
+            category="outside_root",
+        )
+    return raw, requested
+
+
+def ensure_within_root(path: Path, root: Path | None) -> None:
+    if root is not None and not path.is_relative_to(root):
+        raise PathResolutionError(
+            f"Resolved path is outside the configured root {root}: {path}",
+            category="outside_root",
+        )
+
+
 def _equivalence_key(value: str) -> str:
     return unicodedata.normalize("NFC", value.translate(_PUNCTUATION_EQUIVALENTS)).casefold()
 
@@ -134,17 +169,25 @@ def _git_root(path: Path) -> Path | None:
     return None
 
 
-def _fff_candidates(path: Path, limits: ReadLimits) -> tuple[list[Path], str, bool]:
-    """Return safe FFF path matches without making FFF a hard dependency."""
+def _fff_candidates(
+    path: Path,
+    limits: ReadLimits,
+    *,
+    configured_root: Path | None,
+) -> tuple[list[Path], str, bool]:
+    """Return safe, root-contained FFF matches without making FFF a hard dependency."""
     try:
         fff_repo_search = importlib.import_module("fff_repo_search")
     except Exception:
         return [], "unavailable", False
 
-    root = _git_root(path)
-    if root is None:
+    git_root = _git_root(path)
+    if git_root is None:
         return [], "outside_git_repository", False
-    root = root.resolve()
+    git_root = git_root.resolve()
+    search_root = configured_root or git_root
+    if not search_root.is_relative_to(git_root):
+        return [], "outside_git_repository", False
 
     result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
 
@@ -153,7 +196,7 @@ def _fff_candidates(path: Path, limits: ReadLimits) -> tuple[list[Path], str, bo
             response = asyncio.run(
                 fff_repo_search.find_files(
                     path.name,
-                    within=str(root),
+                    within=str(search_root),
                     limit=min(50, limits.max_suggestions + 1),
                 )
             )
@@ -161,7 +204,7 @@ def _fff_candidates(path: Path, limits: ReadLimits) -> tuple[list[Path], str, bo
         except Exception as exc:  # FFF transport/native failures are optional.
             result_queue.put(("error", exc))
 
-    thread = threading.Thread(target=worker, name="prime-robust-read-fff", daemon=True)
+    thread = threading.Thread(target=worker, name="guarded-file-ops-fff", daemon=True)
     thread.start()
     thread.join(limits.fff_timeout_seconds)
     if thread.is_alive():
@@ -186,14 +229,14 @@ def _fff_candidates(path: Path, limits: ReadLimits) -> tuple[list[Path], str, bo
         raw = item.get("absolute_path")
         if not isinstance(raw, str):
             relative = item.get("path")
-            raw = str(root / relative) if isinstance(relative, str) else None
+            raw = str(search_root / relative) if isinstance(relative, str) else None
         if raw is None:
             continue
         safe = _safe_candidate(Path(raw))
         if safe is None:
             continue
         canonical, _ = safe
-        if not canonical.is_relative_to(root):
+        if not canonical.is_relative_to(search_root):
             continue
         key = str(canonical)
         if key not in seen:
@@ -207,6 +250,7 @@ def resolve_path(
     *,
     limits: ReadLimits,
     use_fff: bool,
+    root: Path | None = None,
 ) -> ResolvedPath:
     raw = os.fspath(path)
     if not isinstance(raw, str):
@@ -250,7 +294,9 @@ def resolve_path(
         fff_matches: list[Path] = []
         fff_has_more = False
         if use_fff:
-            fff_matches, fff_status, fff_has_more = _fff_candidates(requested, limits)
+            fff_matches, fff_status, fff_has_more = _fff_candidates(
+                requested, limits, configured_root=root
+            )
         if len(fff_matches) == 1 and not fff_has_more:
             safe = _safe_candidate(fff_matches[0])
             if safe is not None:
@@ -337,6 +383,8 @@ __all__ = [
     "NonRegularFileError",
     "PathResolutionError",
     "ResolvedPath",
+    "ensure_within_root",
     "open_verified_regular",
+    "prepare_path",
     "resolve_path",
 ]

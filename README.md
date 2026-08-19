@@ -7,7 +7,7 @@ The repository is a single installable Prime Agent package and a workspace for i
 
 - [`prime-websearch-parallel`](packages/prime-websearch-parallel): overrides the bundled `websearch` Python skill with Serper and Parallel Search API support.
 - [`prime-fff-repo-search`](packages/prime-fff-repo-search): provides fast repository path and content search through a shared `fff-routerd` service.
-- [`prime-robust-read`](packages/prime-robust-read): provides bounded, format-aware reading for text, notebooks, PDFs, Office/OpenDocument files, RTF, EPUB, and CSV, plus ledger-aware safe mutation.
+- [`prime-guarded-file-ops`](packages/prime-guarded-file-ops): provides guarded, bounded, format-aware local file operations, structured-document extraction, change tracking, and stale-aware atomic mutation.
 - [`prime-subagent-fast-mode`](packages/prime-subagent-fast-mode): defaults RLM subagents to Fast mode off instead of inheriting the parent's service tier.
 - [`prime-bg-jobs`](packages/prime-bg-jobs): provides the `bg` skill for running shell commands and Python callables in the background so a long task never blocks the single-threaded IPython kernel.
 - [`prime-ipython-yield`](packages/prime-ipython-yield): caps how long one IPython cell may hold the agent's only tool, detaching long cells so the model regains control, with `ipython_attach` / `ipython_cancel` to recover them.

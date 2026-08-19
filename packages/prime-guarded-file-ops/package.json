@@ -1,0 +1,41 @@
+{
+  "name": "@unstableneutron/prime-guarded-file-ops",
+  "version": "0.1.0",
+  "description": "Guarded, bounded, format-aware local file operations for Prime Agent.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "prime-agent",
+    "file-operations",
+    "document-extraction",
+    "safe-mutation",
+    "pdf",
+    "jupyter"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "skills/guarded-file-ops/LICENSE",
+    "skills/guarded-file-ops/THIRD_PARTY_NOTICES.md",
+    "skills/guarded-file-ops/SKILL.md",
+    "skills/guarded-file-ops/pyproject.toml",
+    "skills/guarded-file-ops/uv.lock",
+    "skills/guarded-file-ops/src/guarded_file_ops/*.py",
+    "skills/guarded-file-ops/src/guarded_file_ops/py.typed"
+  ],
+  "scripts": {
+    "test": "cd skills/guarded-file-ops && uv run python -m unittest discover -s tests -v",
+    "check": "cd skills/guarded-file-ops && uvx ruff check src tests && uvx ruff format --check src tests",
+    "typecheck": "cd skills/guarded-file-ops && uvx ty check src tests",
+    "build": "cd skills/guarded-file-ops && uv build"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

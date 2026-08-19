@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from prime_robust_read import ReadLedger, read
+from guarded_file_ops import FileOps, FileOpsPolicy
 
 # Small deterministic fixtures from firecrawl/anydoc v0.1.7's MIT-licensed
 # robustness suite. See THIRD_PARTY_NOTICES.md for provenance.
@@ -28,7 +28,7 @@ class DocumentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.ledger = ReadLedger()
+        self.files = FileOps(policy=FileOpsPolicy(use_fff=False))
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -69,7 +69,7 @@ class DocumentTests(unittest.TestCase):
         }
         for name, family in expected.items():
             with self.subTest(name=name):
-                result = read(self.write_fixture(name), ledger=self.ledger, use_fff=False)
+                result = self.files.read(self.write_fixture(name))
                 self.assertEqual(result.status, "ok", result)
                 self.assertEqual(result.format, family)
                 self.assertEqual(result.conversion["backend"], "firecrawl-anydoc")
@@ -77,7 +77,7 @@ class DocumentTests(unittest.TestCase):
 
         csv = self.root / "sample.csv"
         csv.write_text('name,value\n"alpha",1\n', encoding="utf-8")
-        csv_result = read(csv, ledger=self.ledger, use_fff=False)
+        csv_result = self.files.read(csv)
         self.assertEqual(csv_result.format, "csv")
         self.assertIn("alpha", csv_result.content)
 
@@ -105,7 +105,7 @@ class DocumentTests(unittest.TestCase):
                 """<html xmlns="http://www.w3.org/1999/xhtml"><body>
                 <h1>EPUB heading</h1><p>EPUB body</p></body></html>""",
             )
-        epub_result = read(epub, ledger=self.ledger, use_fff=False)
+        epub_result = self.files.read(epub)
         self.assertEqual(epub_result.format, "epub")
         self.assertIn("EPUB body", epub_result.content)
 
@@ -116,7 +116,7 @@ class DocumentTests(unittest.TestCase):
             <text:p>ODS body</text:p></table:table-cell></table:table-row>
             </table:table></office:spreadsheet>""",
         )
-        ods_result = read(ods, ledger=self.ledger, use_fff=False)
+        ods_result = self.files.read(ods)
         self.assertEqual(ods_result.format, "opendocument-spreadsheet")
         self.assertIn("ODS body", ods_result.content)
 
@@ -126,7 +126,7 @@ class DocumentTests(unittest.TestCase):
             <draw:frame><draw:text-box><text:p>ODP body</text:p></draw:text-box>
             </draw:frame></draw:page></office:presentation>""",
         )
-        odp_result = read(odp, ledger=self.ledger, use_fff=False)
+        odp_result = self.files.read(odp)
         self.assertEqual(odp_result.format, "opendocument-presentation")
         self.assertIn("ODP body", odp_result.content)
 
@@ -157,26 +157,26 @@ class DocumentTests(unittest.TestCase):
         fake = types.SimpleNamespace(
             to_markdown_bytes=lambda data, format_name: calls.append(format_name) or "converted"
         )
-        with mock.patch("prime_robust_read.documents.importlib.import_module", return_value=fake):
+        with mock.patch("guarded_file_ops.documents.importlib.import_module", return_value=fake):
             for extension, expected_format in cases.items():
                 with self.subTest(extension=extension):
                     path = self.root / f"route.{extension}"
                     path.write_bytes(b"document")
-                    result = read(path, ledger=ReadLedger(), use_fff=False)
+                    result = self.files.read(path)
                     self.assertEqual(result.status, "ok")
                     self.assertEqual(calls[-1], expected_format)
 
     def test_native_resource_limit_encryption_and_malformed_categories(self):
-        resource = read(self.write_fixture("resource.ods"), ledger=self.ledger, use_fff=False)
+        resource = self.files.read(self.write_fixture("resource.ods"))
         self.assertEqual(resource.category, "resource_limited")
         self.assertEqual(resource.conversion["exception"], "ResourceLimitError")
 
-        encrypted = read(self.write_fixture("encrypted.odt"), ledger=self.ledger, use_fff=False)
+        encrypted = self.files.read(self.write_fixture("encrypted.odt"))
         self.assertEqual(encrypted.category, "encrypted")
 
         malformed = self.root / "broken.docx"
         malformed.write_bytes(b"not a document")
-        result = read(malformed, ledger=self.ledger, use_fff=False)
+        result = self.files.read(malformed)
         self.assertEqual(result.category, "malformed")
 
     def test_missing_native_dependency_does_not_affect_text_reading(self):
@@ -192,10 +192,10 @@ class DocumentTests(unittest.TestCase):
             return original(name)
 
         with mock.patch(
-            "prime_robust_read.documents.importlib.import_module", side_effect=importing
+            "guarded_file_ops.documents.importlib.import_module", side_effect=importing
         ):
-            failed = read(document, ledger=ReadLedger(), use_fff=False)
-            ordinary = read(text, ledger=ReadLedger(), use_fff=False)
+            failed = self.files.read(document)
+            ordinary = self.files.read(text)
         self.assertEqual(failed.category, "missing_dependency")
         self.assertEqual(ordinary.content, "still works")
 

@@ -9,14 +9,16 @@ from typing import Any
 
 from .documents import DocumentConversionError, convert_anydoc, document_format
 from .formatting import Page, SourceLine, iter_string_lines, paginate_lines
-from .ledger import DEFAULT_LEDGER, FileIdentity, ReadLedger
+from .ledger import FileIdentity, FileVersion, ReadLedger
 from .limits import DEFAULT_LIMITS, ReadLimits
 from .notebook import NotebookError, render_notebook
 from .paths import (
     NonRegularFileError,
     PathResolutionError,
     ResolvedPath,
+    ensure_within_root,
     open_verified_regular,
+    prepare_path,
     resolve_path,
 )
 from .pdf import PdfConversionError, convert_pdf
@@ -38,6 +40,7 @@ def _error(
 ) -> ReadResult:
     return ReadResult(
         status="error",
+        ok=False,
         category=category,
         message=message,
         requested_path=requested,
@@ -57,6 +60,7 @@ def _error(
         conversion=conversion or {"status": "not_attempted"},
         pdf=None,
         metadata={},
+        version=None,
         repeated=False,
         unchanged=False,
         changed_since_last_read=False,
@@ -83,9 +87,8 @@ def _base_result(
     previous = ledger.get(canonical) if identity is not None else None
     repeated = bool(previous and previous.identity == identity)
     changed = bool(previous and previous.identity != identity)
-    complete = page.next_offset is None and not page.truncated
     if identity is not None:
-        ledger.record(canonical, identity, complete=complete)
+        ledger.record(canonical, identity)
 
     if page.end_offset is None:
         status = "empty" if page.total_lines == 0 and page.start_offset == 1 else "eof"
@@ -95,12 +98,14 @@ def _base_result(
             else f"Offset {page.start_offset} is at or beyond EOF"
             + (f"; the file has {page.total_lines} lines." if page.total_lines is not None else ".")
         )
-    elif repeated:
-        status = "unchanged"
-        message = "This canonical file is unchanged since its last successful read in this ledger."
     else:
         status = "ok"
-        message = None
+        message = (
+            "This canonical file is unchanged since its last successful read in this FileOps "
+            "instance."
+            if repeated
+            else None
+        )
 
     warnings = list(dict.fromkeys(resolved.warnings + page.warnings + (additional_warnings or [])))
     file_metadata = metadata.copy() if metadata else {}
@@ -114,6 +119,7 @@ def _base_result(
         )
     return ReadResult(
         status=status,
+        ok=True,
         category=None,
         message=message,
         requested_path=resolved.requested,
@@ -133,6 +139,7 @@ def _base_result(
         conversion=conversion,
         pdf=pdf,
         metadata=file_metadata,
+        version=FileVersion.from_identity(canonical, identity) if identity is not None else None,
         repeated=repeated,
         unchanged=repeated,
         changed_since_last_read=changed,
@@ -236,8 +243,9 @@ def read(
     limit: int | None = None,
     *,
     limits: ReadLimits | None = None,
-    ledger: ReadLedger | None = None,
+    ledger: ReadLedger,
     use_fff: bool = True,
+    root: Path | None = None,
 ) -> ReadResult:
     """Read a file or directory through bounded, format-aware handling.
 
@@ -246,7 +254,7 @@ def read(
     character ceiling is deliberately not addressable by a later line offset.
     """
     selected_limits = (limits or DEFAULT_LIMITS).validate()
-    selected_ledger = ledger or DEFAULT_LEDGER
+    selected_ledger = ledger
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 1:
         raise ValueError("offset must be a positive 1-based line number")
     selected_limit = selected_limits.max_lines if limit is None else limit
@@ -259,7 +267,10 @@ def read(
         raise ValueError(f"limit must be between 1 and {selected_limits.max_lines}")
     requested = os.fspath(path)
     try:
-        resolved = resolve_path(path, limits=selected_limits, use_fff=use_fff)
+        requested, effective_path = prepare_path(path, root=root)
+        resolved = resolve_path(effective_path, limits=selected_limits, use_fff=use_fff, root=root)
+        ensure_within_root(resolved.canonical, root)
+        resolved.requested = requested
     except PathResolutionError as exc:
         return _error(
             requested,

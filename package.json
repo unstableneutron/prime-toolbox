@@ -15,7 +15,7 @@
     "skills": [
       "./packages/prime-websearch-parallel/skills",
       "./packages/prime-fff-repo-search/skills",
-      "./packages/prime-robust-read/skills",
+      "./packages/prime-guarded-file-ops/skills",
       "./packages/prime-bg-jobs/skills"
     ],
     "extensions": [

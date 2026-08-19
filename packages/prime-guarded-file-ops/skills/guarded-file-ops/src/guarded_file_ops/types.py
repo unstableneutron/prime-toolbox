@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .ledger import FileVersion
+
 _MAX_REPR_CHARACTERS = 4_096
 
 
@@ -15,6 +17,10 @@ def _short(value: Any, maximum: int = 200) -> str:
 class _Result(dict[str, Any]):
     """A normal dictionary with attribute access and a bounded representation."""
 
+    @property
+    def ok(self) -> bool:
+        return bool(self.get("ok"))
+
     def __getattr__(self, name: str) -> Any:
         try:
             return self[name]
@@ -23,7 +29,12 @@ class _Result(dict[str, Any]):
 
 
 class ReadResult(_Result):
-    """Structured read result whose ``repr`` is safe for IPython."""
+    """Mapping-compatible bounded read result with attribute access."""
+
+    @property
+    def version(self) -> FileVersion | None:
+        value = self.get("version")
+        return value if isinstance(value, FileVersion) else None
 
     def compact(self, max_characters: int = _MAX_REPR_CHARACTERS) -> str:
         max_characters = max(256, min(max_characters, _MAX_REPR_CHARACTERS))
@@ -77,7 +88,12 @@ class ReadResult(_Result):
 
 
 class MutationResult(_Result):
-    """Structured result for :func:`safe_write` and :func:`safe_edit`."""
+    """Mapping-compatible write/edit result with a chainable version."""
+
+    @property
+    def version(self) -> FileVersion | None:
+        value = self.get("version")
+        return value if isinstance(value, FileVersion) else None
 
     def __repr__(self) -> str:
         text = (

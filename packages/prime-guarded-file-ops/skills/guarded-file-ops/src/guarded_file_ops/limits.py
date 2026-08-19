@@ -1,4 +1,4 @@
-"""Central resource and response limits for :mod:`prime_robust_read`."""
+"""Central resource and response limits for :mod:`guarded_file_ops`."""
 
 from __future__ import annotations
 

@@ -137,7 +137,7 @@ def convert_pdf(data: bytes, limits: ReadLimits) -> tuple[str, dict[str, Any], l
     if ocr_pages:
         warnings.append(
             "PDF extraction is incomplete: pages listed in pdf.pages_needing_ocr require "
-            "Prime's vision/OCR path. Hosted OCR is not performed by prime_robust_read."
+            "Prime's vision/OCR path. Hosted OCR is not performed by guarded_file_ops."
         )
     if has_encoding_issues:
         warnings.append(

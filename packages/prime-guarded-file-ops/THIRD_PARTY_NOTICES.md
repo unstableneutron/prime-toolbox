@@ -1,6 +1,6 @@
 # Third-party notices and provenance
 
-`prime_robust_read` is original integration code informed by the following
+`guarded_file_ops` is original integration code informed by the following
 projects and public engineering material.
 
 ## Hermes Agent

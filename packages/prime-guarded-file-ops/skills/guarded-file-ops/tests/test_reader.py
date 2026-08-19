@@ -10,20 +10,20 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from prime_robust_read import ReadLedger, ReadLimits, read
+from guarded_file_ops import FileOps, FileOpsPolicy, ReadLimits
 
 
 class ReaderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.ledger = ReadLedger()
+        self.files = FileOps(policy=FileOpsPolicy(use_fff=False))
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
     def read(self, path, **kwargs):
-        return read(path, ledger=self.ledger, use_fff=False, **kwargs)
+        return self.files.read(path, **kwargs)
 
     def test_empty_file_and_offsets_at_and_beyond_eof(self):
         empty = self.root / "empty.txt"
@@ -100,9 +100,7 @@ class ReaderTests(unittest.TestCase):
     def test_low_level_read_failures_are_categorized(self):
         path = self.root / "unreadable.txt"
         path.write_text("content", encoding="utf-8")
-        with mock.patch(
-            "prime_robust_read.reader.pread_prefix", side_effect=OSError("I/O failure")
-        ):
+        with mock.patch("guarded_file_ops.reader.pread_prefix", side_effect=OSError("I/O failure")):
             result = self.read(path)
         self.assertEqual(result.category, "read_failed")
         self.assertIn("I/O failure", result.message)
@@ -247,11 +245,27 @@ class ReaderTests(unittest.TestCase):
         second = self.read(path)
         self.assertFalse(first.repeated)
         self.assertTrue(second.repeated)
-        self.assertEqual(second.status, "unchanged")
+        self.assertEqual(second.status, "ok")
         path.write_text("changed", encoding="utf-8")
         changed = self.read(path)
         self.assertTrue(changed.changed_since_last_read)
         self.assertEqual(changed.content, "changed")
+
+    def test_regular_file_results_expose_stable_versions(self):
+        path = self.root / "versioned.txt"
+        path.write_text("one\ntwo", encoding="utf-8")
+        first = self.read(path, limit=1)
+        second = self.read(path, offset=2)
+        eof = self.read(path, offset=10)
+        self.assertIsNotNone(first.version)
+        self.assertEqual(first.version, first["version"])
+        self.assertEqual(first.version, second.version)
+        self.assertEqual(first.version, eof.version)
+
+        directory = self.read(self.root)
+        missing = self.read(self.root / "missing-version.txt")
+        self.assertIsNone(directory.version)
+        self.assertIsNone(missing.version)
 
     def test_repr_is_bounded_while_content_remains_programmatic(self):
         path = self.root / "repr.txt"
@@ -279,8 +293,8 @@ class ReaderTests(unittest.TestCase):
         existing = self.root / "existing.txt"
         existing.write_text("ordinary", encoding="utf-8")
         with mock.patch.dict("sys.modules", {"fff_repo_search": None}):
-            ordinary = read(existing, ledger=ReadLedger())
-            missing = read(self.root / "missing.txt", ledger=ReadLedger())
+            ordinary = FileOps().read(existing)
+            missing = FileOps().read(self.root / "missing.txt")
         self.assertEqual(ordinary.content, "ordinary")
         self.assertEqual(missing.category, "not_found")
         self.assertEqual(missing.recovery["fff_status"], "unavailable")
@@ -298,10 +312,10 @@ class ReaderTests(unittest.TestCase):
 
         fake = types.SimpleNamespace(find_files=find_files)
         with (
-            mock.patch("prime_robust_read.paths._git_root", return_value=self.root),
-            mock.patch("prime_robust_read.paths.importlib.import_module", return_value=fake),
+            mock.patch("guarded_file_ops.paths._git_root", return_value=self.root),
+            mock.patch("guarded_file_ops.paths.importlib.import_module", return_value=fake),
         ):
-            result = read(self.root / "report.txt", ledger=ReadLedger())
+            result = FileOps().read(self.root / "report.txt")
         self.assertEqual(result.content, "recovered")
         self.assertEqual(result.recovery["method"], "fff")
 
@@ -324,17 +338,17 @@ class ReaderTests(unittest.TestCase):
             }
 
         try:
-            with mock.patch("prime_robust_read.paths._git_root", return_value=self.root):
+            with mock.patch("guarded_file_ops.paths._git_root", return_value=self.root):
                 with mock.patch(
-                    "prime_robust_read.paths.importlib.import_module",
+                    "guarded_file_ops.paths.importlib.import_module",
                     return_value=types.SimpleNamespace(find_files=ambiguous),
                 ):
-                    result = read(self.root / "ambiguous.txt", ledger=ReadLedger())
+                    result = FileOps().read(self.root / "ambiguous.txt")
                 with mock.patch(
-                    "prime_robust_read.paths.importlib.import_module",
+                    "guarded_file_ops.paths.importlib.import_module",
                     return_value=types.SimpleNamespace(find_files=escaped),
                 ):
-                    escaped_result = read(self.root / "escaped.txt", ledger=ReadLedger())
+                    escaped_result = FileOps().read(self.root / "escaped.txt")
         finally:
             outside.unlink(missing_ok=True)
         self.assertEqual(result.category, "ambiguous_path")

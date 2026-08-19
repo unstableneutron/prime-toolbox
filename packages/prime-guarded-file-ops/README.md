@@ -1,10 +1,10 @@
-# prime-robust-read
+# prime-guarded-file-ops
 
-`prime_robust_read` is a Python-backed Prime Agent skill for bounded,
-format-aware local reading and ledger-aware safe mutation. It rejects special
-files before I/O, incrementally reads UTF-8 text, renders notebooks natively,
-uses PDF Inspector directly for PDFs, and uses Firecrawl Anydoc for Office,
-OpenDocument, RTF, EPUB, and CSV.
+`guarded_file_ops` is a Python-backed Prime Agent skill for guarded, bounded,
+format-aware local file operations. It rejects special files before I/O,
+incrementally reads UTF-8 text, renders notebooks natively, extracts structured
+documents, tracks observed file identities, and provides stale-aware atomic
+writes and exact edits.
 
 ## Install
 
@@ -15,8 +15,9 @@ prime-agent package install ~/Projects/prime-toolbox
 ```
 
 Prime discovers the skill's `pyproject.toml` and installs it editable into the
-kernel environment. The Python distribution and import identity are both
-exactly `prime_robust_read`.
+kernel environment. The skill and Python distribution are named
+`guarded-file-ops`; Prime exposes the contract-required `guarded_file_ops`
+import in its IPython kernel.
 
 The pinned native dependencies are:
 
@@ -32,25 +33,44 @@ base package is importable.
 
 ## API
 
-```python
-from prime_robust_read import ReadLedger, ReadLimits, read, safe_edit, safe_write
+The module-level functions are the canonical API:
 
-result = read("report.pdf", offset=1, limit=200)
+```python
+import guarded_file_ops
+
+result = guarded_file_ops.read("report.pdf", offset=1, limit=200)
 print(result)
 print(result["pdf"])
 
 if result.next_offset is not None:
-    next_page = read("report.pdf", offset=result.next_offset, limit=200)
+    next_page = guarded_file_ops.read(
+        "report.pdf", offset=result.next_offset, limit=200
+    )
 ```
 
-`ReadResult` and `MutationResult` subclass `dict`. Their `repr()`/`str()` is
-limited to 4 KiB for IPython while all structured fields and the already
-bounded content window remain programmatically accessible.
+`ReadResult` and `MutationResult` subclass `dict`, support attribute access,
+and keep `repr()`/`str()` below 4 KiB. Operational failures are structured
+results with `ok=False`; invalid programmer arguments raise `TypeError` or
+`ValueError`.
 
 Offsets are 1-based source-line numbers. `next_offset` always names the next
 unreturned source line. Per-line clamping is lossy by design: the remainder of
 one overlong line is not exposed through another line offset and is reported
 in `warnings`.
+
+For isolated state, root containment, or custom policy, use the secondary API:
+
+```python
+files = guarded_file_ops.FileOps(
+    root=repo,
+    policy=guarded_file_ops.FileOpsPolicy(
+        limits=guarded_file_ops.ReadLimits(max_lines=500),
+        use_fff=False,
+        allow_mutation=True,
+    ),
+)
+result = files.read("docs/report.pdf")
+```
 
 ## Supported formats
 
@@ -124,32 +144,47 @@ the normal bounded `content` stream. Scanned or unreliable pages carry an
 explicit placeholder; hosted OCR is deliberately excluded. Send only flagged
 pages through Prime's available vision/OCR path.
 
-## Safe mutation ledger
+## Version-checked mutation
+
+Every successful regular-file read returns an immutable, path-bound
+`FileVersion`. Existing-file mutations require that version:
 
 ```python
-ledger = ReadLedger()
-read("config.toml", ledger=ledger)
-safe_edit("config.toml", "old", "new", ledger=ledger)
-safe_write("created.txt", "hello\n", require_read=True, ledger=ledger)
+observed = guarded_file_ops.read("config.toml")
+assert observed.ok and observed.version is not None
+edited = guarded_file_ops.edit(
+    observed.canonical_path,
+    "old",
+    "new",
+    expected=observed.version,
+)
+assert edited.ok and edited.version is not None
+replaced = guarded_file_ops.write(
+    observed.canonical_path,
+    "complete replacement\n",
+    expected=edited.version,
+)
+created = guarded_file_ops.write("created.txt", "hello\n")
 ```
 
-Successful reads record canonical path, device, inode, size, and nanosecond
-mtime. Repeated unchanged reads and changes since the previous read are exposed
-on `ReadResult`. `safe_edit()` requires a prior read by default; both mutation
-helpers refuse a known stale identity. New files are allowed through
-`safe_write()`. Writes use a same-directory temporary file, flush/fsync, mode
-preservation, and atomic `os.replace()` where supported.
+`edit()` requires exactly one literal match by default; `all_matches=True`
+enables an explicit replace-all. Existing-file `write()` calls without
+`expected` are refused. Stale, deleted, and wrong-path tokens are refused.
+Successful mutations return a new chainable version, while identical content
+returns `unchanged` without replacing the inode.
 
-This is a cooperative boundary, not global interception. Arbitrary Python,
-shell, IPython, editor, or other-process filesystem calls bypass the ledger,
-and ordinary filesystems cannot provide a fully atomic compare-and-swap across
-the final stale check and rename. The package never monkey-patches `open()`,
-`pathlib.Path`, builtins, IPython, or interpreter-global behavior.
+Writes use a same-directory temporary file, flush/fsync, mode preservation for
+existing files, and atomic replacement where supported. This is a cooperative
+boundary, not global interception. Arbitrary Python, shell, IPython, editor,
+native extension, or other-process operations can bypass it, and ordinary
+filesystems cannot provide a portable fully atomic compare-and-swap across the
+last version check and replacement. The package never monkey-patches `open()`,
+`io`, `os`, `pathlib.Path`, builtins, IPython, or interpreter-global behavior.
 
 ## Development
 
 ```bash
-cd packages/prime-robust-read
+cd packages/prime-guarded-file-ops
 aube test
 aube run check
 aube run typecheck
