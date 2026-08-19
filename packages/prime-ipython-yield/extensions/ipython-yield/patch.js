@@ -18,6 +18,67 @@ import { DetachedCellRegistry } from "./registry.js";
 
 export const PATCH_STATE = Symbol.for("prime-toolbox:ipython-yield");
 
+/**
+ * Worker-level routing tables.
+ *
+ * A daemon worker hosts SEVERAL sessions, each activating this extension with
+ * its own runtime (own registry, own tools, own wake listener). Both patches
+ * below install on shared prototypes and are idempotent, so the naive shape --
+ * closing over the runtime that happened to install first -- silently binds
+ * every later session to session #1's registry. That produced three bugs:
+ * a sibling's detached cell reported the kernel busy while this session's
+ * kernel was idle; this session's ipython_attach/ipython_cancel looked in an
+ * empty registry; and the completion wake was delivered to the wrong session.
+ *
+ * So the patches resolve their runtime from `this` at CALL time instead.
+ * Provisioners are constructed per session with `options.sessionId`, which is
+ * the routing key; managers are then pinned to the runtime that provisioned
+ * them.
+ */
+const runtimesBySession = new Map();
+const runtimesByProvisioner = new WeakMap();
+const runtimesByProvisionerPrototype = new WeakMap();
+const runtimesByManager = new WeakMap();
+/** Last resort for a host that exposes no session id: preserves single-session behaviour. */
+let fallbackRuntime;
+
+function sessionIdOf(provisioner) {
+  if (!provisioner || typeof provisioner !== "object") return undefined;
+  const direct = provisioner.sessionId;
+  if (typeof direct === "string" && direct) return direct;
+  const viaOptions = provisioner.options?.sessionId;
+  return typeof viaOptions === "string" && viaOptions ? viaOptions : undefined;
+}
+
+function registerRuntime(runtime, sessionId) {
+  if (!fallbackRuntime) fallbackRuntime = runtime;
+  if (sessionId) runtimesBySession.set(sessionId, runtime);
+  return runtime;
+}
+
+function runtimeForProvisioner(provisioner) {
+  const pinned = runtimesByProvisioner.get(provisioner);
+  if (pinned) return pinned;
+  // Session id first: in a worker the provisioner prototype is shared, so only
+  // the id distinguishes sessions. The prototype is the next best key when a
+  // host exposes no id, and beats fallbackRuntime because that one is
+  // first-install-wins for the whole worker.
+  const runtime =
+    runtimesBySession.get(sessionIdOf(provisioner)) ??
+    runtimesByProvisionerPrototype.get(Object.getPrototypeOf(provisioner ?? {})) ??
+    fallbackRuntime;
+  if (runtime && provisioner && typeof provisioner === "object") {
+    runtimesByProvisioner.set(provisioner, runtime);
+  }
+  return runtime;
+}
+
+/** Test seam: drop worker-level routing so a suite can install a fresh set of runtimes. */
+export function resetYieldRouting() {
+  runtimesBySession.clear();
+  fallbackRuntime = undefined;
+}
+
 const ENSURE_METHOD = "ensure";
 const EXECUTE_METHOD = "execute";
 
@@ -38,7 +99,7 @@ const YIELD = Symbol("yield");
 export function createYieldRuntime(options = {}) {
   const registry = options.registry ?? new DetachedCellRegistry();
   const readyManagers = new WeakSet();
-  return {
+  const runtime = {
     registry,
     readyManagers,
     onError: options.onError ?? (() => {}),
@@ -59,12 +120,19 @@ export function createYieldRuntime(options = {}) {
       return clampInt(raw, 256, 200_000, 16_000);
     },
     markReady(manager) {
-      if (manager && typeof manager === "object") readyManagers.add(manager);
+      if (!manager || typeof manager !== "object") return;
+      readyManagers.add(manager);
+      // Pin routing here as well as in patchedEnsure. A manager whose prototype
+      // was patched directly, without going through the provisioner, would
+      // otherwise resolve through fallbackRuntime and end up booking its cells
+      // in whichever session's registry happened to install first.
+      runtimesByManager.set(manager, runtime);
     },
     isReady(manager) {
       return Boolean(manager) && readyManagers.has(manager);
     },
   };
+  return runtime;
 }
 
 function assertPatchable(prototype, method, what) {
@@ -93,13 +161,18 @@ function markInstalled(prototype, method, descriptor) {
  * @returns {"installed" | "already-installed"}
  */
 export function installKernelExecuteYield(prototype, runtime) {
+  if (runtime) registerRuntime(runtime, undefined);
   if (prototype?.[PATCH_STATE]?.[EXECUTE_METHOD]) return "already-installed";
   const descriptor = assertPatchable(prototype, EXECUTE_METHOD, "KernelManager");
   const original = descriptor.value;
-  const { registry } = runtime;
 
   async function patchedExecute(code, opts = {}) {
     const options = opts ?? {};
+    // Resolved per call, not captured: this prototype is shared by every
+    // session in the worker (see the routing tables above).
+    const runtime = runtimesByManager.get(this) ?? fallbackRuntime;
+    if (!runtime) return original.call(this, code, options);
+    const { registry } = runtime;
 
     // Startup, snapshot/restore and namespace listing must behave exactly as
     // before -- they are host bookkeeping, not model-issued work.
@@ -199,7 +272,13 @@ export function installKernelExecuteYield(prototype, runtime) {
  * @param {ReturnType<typeof createYieldRuntime>} runtime
  * @returns {"installed" | "already-installed"}
  */
-export function installIpythonYield(prototype, runtime) {
+export function installIpythonYield(prototype, runtime, options = {}) {
+  // Register unconditionally: a later session must not be discarded just
+  // because an earlier one already patched the shared prototype.
+  registerRuntime(runtime, options.sessionId);
+  if (prototype && typeof prototype === "object") {
+    runtimesByProvisionerPrototype.set(prototype, runtime);
+  }
   if (prototype?.[PATCH_STATE]?.[ENSURE_METHOD]) return "already-installed";
   const descriptor = assertPatchable(prototype, ENSURE_METHOD, "IpythonKernelProvisioner");
   const original = descriptor.value;
@@ -207,13 +286,16 @@ export function installIpythonYield(prototype, runtime) {
   async function patchedEnsure(...args) {
     const manager = await original.apply(this, args);
     if (manager && typeof manager === "object") {
+      // Whichever session owns this provisioner owns the manager it returns.
+      const owner = runtimeForProvisioner(this) ?? runtime;
       try {
-        installKernelExecuteYield(Object.getPrototypeOf(manager), runtime);
+        installKernelExecuteYield(Object.getPrototypeOf(manager), owner);
       } catch (error) {
         // A shape change must degrade to stock behaviour, not break the kernel.
-        runtime.onError(error);
+        owner.onError(error);
       }
-      runtime.markReady(manager);
+      runtimesByManager.set(manager, owner);
+      owner.markReady(manager);
     }
     return manager;
   }

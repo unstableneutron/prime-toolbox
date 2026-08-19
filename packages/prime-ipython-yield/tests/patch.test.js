@@ -6,6 +6,7 @@ import {
   installIpythonYield,
   installKernelExecuteYield,
   PATCH_STATE,
+  resetYieldRouting,
   restoreIpythonYield,
 } from "../extensions/ipython-yield/patch.js";
 
@@ -320,4 +321,84 @@ test("a broken KernelManager shape degrades to stock behaviour instead of breaki
   assert.equal(await provisioner.ensure(), manager, "ensure() must still hand back a usable kernel");
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /no longer exposes execute\(\)/);
+});
+
+// ---------------------------------------------------------------------------
+// Multi-session isolation (regression: cross-session false-busy + lost wakeup)
+//
+// A daemon worker hosts several sessions. Each activates this extension with
+// its OWN runtime/registry, but installIpythonYield/installKernelExecuteYield
+// are prototype patches guarded by PATCH_STATE, so the FIRST runtime wins and
+// every later session's runtime is silently discarded. Consequences:
+//   1. session #1's registry books ALL sessions' cells, so registry.active()
+//      returns a SIBLING session's detached cell and refuses this session's
+//      executes while this session's kernel is idle;
+//   2. the later session's onSettled never fires -> the completion wake is
+//      delivered to session #1 (lost wakeup by misdelivery), and its
+//      ipython_attach/ipython_cancel bind to an empty registry.
+// ---------------------------------------------------------------------------
+
+test("two sessions on one worker do not share a detached-cell registry", async () => {
+  const provisionerProto = {
+    async ensure() {
+      return this._manager;
+    },
+  };
+
+  // Session A: its cell will detach and stay running.
+  const runtimeA = testRuntime();
+  const blockedA = deferred();
+  const { proto: protoA, manager: managerA } = makeManager(() => blockedA.promise);
+  const provisionerA = Object.create(provisionerProto);
+  provisionerA._manager = managerA;
+  provisionerA.options = { sessionId: "session-A" };
+
+  // Session B: an independent session with an idle kernel.
+  const runtimeB = testRuntime();
+  const { proto: protoB, manager: managerB } = makeManager(async () => okResult("B ran"));
+  const provisionerB = Object.create(provisionerProto);
+  provisionerB._manager = managerB;
+  provisionerB.options = { sessionId: "session-B" };
+
+  resetYieldRouting();
+  installIpythonYield(provisionerProto, runtimeA, { sessionId: "session-A" });
+  installIpythonYield(provisionerProto, runtimeB, { sessionId: "session-B" });
+
+  try {
+    await provisionerA.ensure();
+    await provisionerB.ensure();
+
+    // Session A detaches a long cell.
+    const detached = await managerA.execute("while True: pass");
+    assert.match(detached.stdout, /<ipython_cell_detached/);
+    assert.equal(runtimeA.registry.active()?.state, "detached");
+
+    // THE BUG: session B's kernel is idle, but its execute is refused because
+    // session A's detached cell lives in the registry B's patch closes over.
+    const resultB = await managerB.execute("print('B')");
+    assert.ok(
+      !/<ipython_kernel_busy/.test(resultB.stdout),
+      "session B was refused because of a SIBLING session's detached cell",
+    );
+    assert.equal(resultB.status, "ok");
+
+    // Registries must be disjoint: B never booked a cell, so it has none.
+    assert.equal(runtimeB.registry.active(), undefined);
+
+    // THE WAKE: session A's settle must reach session A's own listener.
+    let wokeA = 0;
+    let wokeB = 0;
+    runtimeA.registry.onSettled(() => { wokeA += 1; });
+    runtimeB.registry.onSettled(() => { wokeB += 1; });
+    blockedA.resolve(okResult("A done"));
+    await new Promise((r) => setTimeout(r, 5));
+
+    assert.equal(wokeA, 1, "session A must be woken for its own cell");
+    assert.equal(wokeB, 0, "session B must NOT receive session A's wake");
+  } finally {
+    restoreIpythonYield(provisionerProto);
+    restoreIpythonYield(protoA);
+    restoreIpythonYield(protoB);
+    resetYieldRouting();
+  }
 });
