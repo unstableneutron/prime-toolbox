@@ -1,0 +1,43 @@
+{
+  "name": "@unstableneutron/prime-ipython-yield",
+  "version": "0.1.0",
+  "description": "Cap how long one IPython cell may block Prime Agent's only tool; detach long cells and re-attach later.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "prime-agent",
+    "ipython",
+    "kernel",
+    "long-running"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/ipython-yield/index.js"
+    ]
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "extensions/ipython-yield/*.js"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check extensions/ipython-yield/registry.js && node --check extensions/ipython-yield/patch.js && node --check extensions/ipython-yield/attach.js && node --check extensions/ipython-yield/tools.js && node --check extensions/ipython-yield/index.js && node --check tests/patch.test.js && node --check tests/registry.test.js && node --check tests/attach.test.js"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@sinclair/typebox": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@unstableneutron/prime-bg-jobs",
+  "version": "0.1.0",
+  "description": "Non-blocking background jobs for Prime Agent's single-threaded IPython kernel.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "prime-agent",
+    "background-jobs",
+    "subprocess",
+    "non-blocking",
+    "ipython"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "skills/bg/LICENSE",
+    "skills/bg/SKILL.md",
+    "skills/bg/pyproject.toml",
+    "skills/bg/uv.lock",
+    "skills/bg/src/bg/*.py",
+    "skills/bg/src/bg/py.typed"
+  ],
+  "scripts": {
+    "test": "cd skills/bg && uv run python -m unittest discover -s tests -v",
+    "check": "cd skills/bg && uvx ruff check src tests && uvx ruff format --check src tests",
+    "typecheck": "cd skills/bg && uvx ty check src tests",
+    "build": "cd skills/bg && uv build"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -15,10 +15,12 @@
     "skills": [
       "./packages/prime-websearch-parallel/skills",
       "./packages/prime-fff-repo-search/skills",
-      "./packages/prime-robust-read/skills"
+      "./packages/prime-robust-read/skills",
+      "./packages/prime-bg-jobs/skills"
     ],
     "extensions": [
-      "./packages/prime-subagent-fast-mode/extensions/subagent-fast-mode/index.js"
+      "./packages/prime-subagent-fast-mode/extensions/subagent-fast-mode/index.js",
+      "./packages/prime-ipython-yield/extensions/ipython-yield/index.js"
     ]
   },
   "scripts": {
