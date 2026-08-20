@@ -119,3 +119,52 @@ test("peek returns pending output without consuming it", () => {
   assert.equal(cell.drain(), "first\n", "the bytes are still there for a real consumer");
   assert.equal(cell.peek(), "", "and are gone once actually delivered");
 });
+
+test("claims are counted and released independently", () => {
+  const registry = new DetachedCellRegistry();
+  const cell = registry.create("code");
+  assert.equal(cell.claimed, false);
+
+  const releaseA = cell.claim();
+  const releaseB = cell.claim();
+  assert.equal(cell.claimed, true);
+
+  releaseA();
+  releaseA(); // releasing twice must not double-decrement
+  assert.equal(cell.claimed, true, "B still holds a claim");
+
+  releaseB();
+  assert.equal(cell.claimed, false);
+});
+
+test("a truncating consuming read records the head it destroyed", () => {
+  const registry = new DetachedCellRegistry();
+  const cell = registry.create("code");
+  cell.append("z".repeat(2_000), "stdout");
+
+  const text = cell.drain(300);
+  assert.match(text, /earlier chars omitted/);
+  assert.equal(cell.droppedChars, 1_700, "the omitted head is gone, and must be accounted for");
+  assert.equal(cell.drain(300), "", "the cursor moved past it, so nothing can recover it");
+});
+
+test("peeking never records drops, because it destroys nothing", () => {
+  const registry = new DetachedCellRegistry();
+  const cell = registry.create("code");
+  cell.append("z".repeat(2_000), "stdout");
+
+  cell.peek(300);
+  assert.equal(cell.droppedChars, 0);
+  assert.equal(cell.drain(4_000).length, 2_000, "a later consumer still gets everything");
+});
+
+test("busyResult does not steal output from the detached cell's own attach", () => {
+  const registry = new DetachedCellRegistry();
+  const cell = registry.create("time.sleep(300)");
+  registry.markDetached(cell);
+  cell.append("DETACHED OUTPUT\n", "stdout");
+
+  const busy = busyResult(cell, 16_000);
+  assert.match(busy.stdout, /DETACHED OUTPUT/, "the banner still shows progress");
+  assert.equal(cell.drain(16_000), "DETACHED OUTPUT\n", "but an attach must still receive it");
+});

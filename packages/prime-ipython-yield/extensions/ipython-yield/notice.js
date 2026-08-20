@@ -4,32 +4,34 @@
  * Kept free of Prime Agent imports (like `registry.js` and `attach.js`) so the
  * whole notice path can be unit-tested standalone.
  *
- * Two properties matter, and both are regressions we have actually observed:
+ * The notice is emitted SYNCHRONOUSLY inside `registry.settle()`'s handler
+ * loop. It needs no timer, which matters more than it looks: an earlier
+ * revision deferred by one macrotask using an unref'd `setTimeout`, and an
+ * unref'd timer does not hold the event loop open. On an idle loop the wake was
+ * therefore silently DROPPED -- precisely the `bg.run` + end-turn path where
+ * this notice is the only delivery, and a dropped wake is indistinguishable
+ * from a cell that never finished. Being synchronous also keeps the callback
+ * inside the settle loop's try/catch, so a throw here cannot escape as an
+ * uncaught exception.
  *
- * 1. The notice must not STARVE an in-flight `ipython_attach`. `settle()` runs
- *    its listeners synchronously, while `attachCell` resumes on a microtask
- *    after `waitForSettle` resolves. A listener that reads output during the
- *    settle loop therefore always wins, no matter which listener registered
- *    first -- so registration order is not a fix. Deferring by one MACROtask
- *    puts the notice strictly after any already-queued microtask.
+ * Whether the body is included is decided by an explicit CLAIM, not by winning
+ * a race:
  *
- * 2. The notice must not CONSUME output. It peeks, so whatever it reports stays
- *    recoverable through a later attach if the tool call that should have
- *    delivered it was aborted.
- *
- * Together these make the body self-regulating: if an attach collected the
- * output, the peek is empty and the notice degrades to a one-line wake; if
- * nothing collected it, the notice carries it, which is the only delivery on
- * the `bg.run` + end-turn path.
+ *  - A consumer has claimed the cell -- an `ipython_attach` or `ipython_cancel`
+ *    waiting in `waitForSettle` -- so it will deliver the bytes itself the
+ *    moment it resumes. The notice emits a bare wake and does not read at all,
+ *    so it cannot starve the consumer.
+ *  - Nobody claimed it, so the notice carries the output as its only delivery.
+ *    It reads with the non-consuming `peek()`, leaving the cursor untouched, so
+ *    a later attach can still recover the same bytes if this message is lost or
+ *    the turn it wakes is aborted.
  */
 
 import { describeOutcome } from "./attach.js";
 
-/** One macrotask, i.e. strictly after any pending microtask continuation. */
-function macrotask(fn) {
-  const timer = setTimeout(fn, 0);
-  if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
-  return timer;
+/** Truncated reads are prefixed by `read()`; the omitted head is unrecoverable. */
+function isTruncated(tail) {
+  return tail.startsWith("[... ");
 }
 
 /**
@@ -39,16 +41,29 @@ function macrotask(fn) {
  * @param {string} tail Undelivered output, already peeked (never consumed).
  */
 export function buildSettleNotice(cell, tail) {
-  const body = tail ? ["", tail] : [];
+  const lines = [describeOutcome(cell)];
+  if (tail) {
+    lines.push("", tail);
+    // Only claim completeness when the read was not truncated: with a truncated
+    // read the head is already gone, so attaching cannot recover it either.
+    if (!isTruncated(tail)) {
+      lines.push("", `Output above is complete; no ipython_attach(cell="${cell.id}") needed.`);
+    }
+  }
   return {
     customType: "ipython-yield:completed",
-    content: [describeOutcome(cell), ...body].join("\n"),
+    content: lines.join("\n"),
     display: true,
     details: {
       cellId: cell.id,
       state: cell.state,
       elapsedMs: cell.elapsedMs,
+      /** Characters carried by THIS message, after any truncation. */
       pendingChars: tail.length,
+      /** Characters no consumer can recover, dropped by a truncating read. */
+      droppedChars: cell.droppedChars,
+      /** True when a waiting attach/cancel will deliver the output instead. */
+      claimed: cell.claimed,
     },
   };
 }
@@ -57,16 +72,18 @@ export function buildSettleNotice(cell, tail) {
  * Build the `onSettled` listener that wakes the session.
  *
  * @param {object} options
- * @param {() => number} options.maxChars Same cap the tools use; the notice used
- *   to hard-code 2_000 while consuming the cursor, which permanently discarded
- *   everything before the last 2k characters.
+ * @param {() => number} options.maxChars Same cap the tools use. The notice
+ *   previously hard-coded 2_000 while consuming the cursor, which permanently
+ *   discarded everything before the last 2k characters.
  * @param {(message: object) => void} options.send Delivers the custom message.
- * @param {(fn: () => void) => unknown} [options.defer] Seam for tests.
+ * @param {() => void} [options.prune] Drops old settled cells. Without this the
+ *   notice-only path -- the common one -- never prunes, because only attach and
+ *   cancel do, and the registry grows for the life of the session.
  */
-export function createSettleNotice({ maxChars, send, defer = macrotask }) {
+export function createSettleNotice({ maxChars, send, prune }) {
   return function onCellSettled(cell) {
-    defer(() => {
-      send(buildSettleNotice(cell, cell.peek(maxChars())));
-    });
+    const tail = cell.claimed ? "" : cell.peek(maxChars());
+    send(buildSettleNotice(cell, tail));
+    prune?.();
   };
 }

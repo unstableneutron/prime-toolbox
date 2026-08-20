@@ -34,8 +34,12 @@ export function waitForSettle(registry, cell, timeoutMs) {
     const off = registry.onSettled((settledCell) => {
       if (settledCell.id === cell.id) finish();
     });
+    // Deliberately NOT unref'd. A caller is awaiting the promise this timer
+    // resolves, so the process genuinely has pending work; an unref'd timer lets
+    // the loop go empty and the await never settles ("Promise resolution is
+    // still pending but the event loop has already resolved"). The wait is
+    // bounded by clampWait, so holding the loop is bounded too.
     const timer = setTimeout(finish, timeoutMs);
-    if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
   });
 }
 
@@ -88,10 +92,21 @@ export async function attachCell(runtime, params = {}) {
   if (picked.error) return { text: picked.error, details: { status: "unknown-cell" }, isError: true };
   const cell = picked.cell;
 
-  await waitForSettle(registry, cell, clampWait(params.timeout_ms));
-
-  const body = cell.drain(runtime.maxChars());
-  const done = isFinished(cell);
+  // Claimed synchronously, and held until this call has actually drained. The
+  // settle notice reads the claim during registry.settle()'s handler loop and
+  // emits a bare wake rather than taking output this call is about to deliver,
+  // so the outcome no longer depends on which listener registered first or on
+  // a microtask beating a timer.
+  const release = cell.claim();
+  let body;
+  let done;
+  try {
+    await waitForSettle(registry, cell, clampWait(params.timeout_ms));
+    body = cell.drain(runtime.maxChars());
+    done = isFinished(cell);
+  } finally {
+    release();
+  }
   const header = done ? describeOutcome(cell) : `${cell.id} is still running after ${seconds(cell.elapsedMs)}.`;
   const footer = done
     ? "The kernel is free again; you can run new ipython cells."
@@ -127,11 +142,20 @@ export async function cancelCell(runtime, params = {}) {
     };
   }
 
-  cell.controller.abort();
-  // The kernel interrupts, then force-resolves after its own abort grace period.
-  await waitForSettle(registry, cell, runtime.cancelWaitMs?.() ?? CANCEL_SETTLE_WAIT_MS);
-  const body = cell.drain(runtime.maxChars());
-  const done = isFinished(cell);
+  // Same claim contract as attachCell: this call will deliver the output, so
+  // the settle notice must not take it first.
+  const release = cell.claim();
+  let body;
+  let done;
+  try {
+    cell.controller.abort();
+    // The kernel interrupts, then force-resolves after its own abort grace period.
+    await waitForSettle(registry, cell, runtime.cancelWaitMs?.() ?? CANCEL_SETTLE_WAIT_MS);
+    body = cell.drain(runtime.maxChars());
+    done = isFinished(cell);
+  } finally {
+    release();
+  }
   if (done) registry.prune();
   return {
     text: [

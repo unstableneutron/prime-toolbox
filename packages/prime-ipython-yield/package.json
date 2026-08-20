@@ -23,7 +23,9 @@
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check extensions/ipython-yield/registry.js && node --check extensions/ipython-yield/patch.js && node --check extensions/ipython-yield/attach.js && node --check extensions/ipython-yield/tools.js && node --check extensions/ipython-yield/index.js && node --check tests/patch.test.js && node --check tests/registry.test.js && node --check tests/attach.test.js"
+    "check": "node --check extensions/ipython-yield/registry.js && node --check extensions/ipython-yield/patch.js && node --check extensions/ipython-yield/attach.js && node --check extensions/ipython-yield/tools.js && node --check extensions/ipython-yield/index.js && node --check tests/patch.test.js && node --check tests/registry.test.js && node --check tests/attach.test.js",
+    "lint": "oxlint -D correctness -D suspicious .",
+    "fmt:check": "oxfmt --check ."
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -39,5 +41,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "engines": {
+    "node": ">=22.8.0"
   }
 }

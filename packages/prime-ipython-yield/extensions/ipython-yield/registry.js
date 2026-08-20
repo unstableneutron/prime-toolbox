@@ -42,6 +42,35 @@ export class DetachedCell {
     this.controller = undefined;
     /** The original execute() promise, kept alive after the tool call returns. */
     this.inner = undefined;
+    /**
+     * Consumers that have staked a claim on this cell's final output.
+     *
+     * A claim is taken SYNCHRONOUSLY, before the cell settles, by anything that
+     * will deliver the output itself once it does -- today that is an
+     * `ipython_attach` or `ipython_cancel` sitting in `waitForSettle`. The
+     * settle notice checks it during the settle loop and, when a claim is
+     * outstanding, emits a bare wake instead of reading output. Correctness
+     * then depends on an explicit flag rather than on the notice's callback
+     * losing a race to a microtask.
+     */
+    this.claims = 0;
+    /** Characters dropped by a truncating read, which no consumer can recover. */
+    this.droppedChars = 0;
+  }
+
+  /** Stake a claim on the final output. Returns the matching release. */
+  claim() {
+    this.claims += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.claims = Math.max(0, this.claims - 1);
+    };
+  }
+
+  get claimed() {
+    return this.claims > 0;
   }
 
   get elapsedMs() {
@@ -73,7 +102,12 @@ export class DetachedCell {
     if (err) text += (text ? "\n" : "") + err;
     if (text.length <= limit) return text;
     // Keep the tail: the end of a long-running cell's output is what matters.
-    return `[... ${text.length - limit} earlier chars omitted ...]\n${text.slice(-limit)}`;
+    // A consuming read advanced the cursor past the head above, so those bytes
+    // are gone for every consumer, not merely deferred. Account for them so the
+    // loss is visible rather than silent.
+    const dropped = text.length - limit;
+    if (consume) this.droppedChars += dropped;
+    return `[... ${dropped} earlier chars omitted ...]\n${text.slice(-limit)}`;
   }
 
   /** Undelivered output, marking it delivered. */
@@ -200,7 +234,11 @@ export function detachedResult(cell, maxChars) {
  * kernel. status is "error" so the model cannot mistake this for execution.
  */
 export function busyResult(cell, maxChars) {
-  const body = cell.drain(maxChars);
+  // Peek, do not drain. This banner is an unsolicited error about a DIFFERENT
+  // cell than the one the model just tried to run, so consuming here would take
+  // bytes from the eventual ipython_attach on the detached cell and leave it
+  // reporting "(no new output)" -- the same theft the settle notice used to do.
+  const body = cell.peek(maxChars);
   const banner = [
     `<ipython_kernel_busy cell="${cell.id}" elapsed="${seconds(cell.elapsedMs)}">`,
     body || "(no new output)",
