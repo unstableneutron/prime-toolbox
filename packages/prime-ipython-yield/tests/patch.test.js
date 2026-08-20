@@ -6,6 +6,8 @@ import {
   installIpythonYield,
   installKernelExecuteYield,
   PATCH_STATE,
+  isFallbackContested,
+  registerYieldSession,
   resetYieldRouting,
   restoreIpythonYield,
 } from "../extensions/ipython-yield/patch.js";
@@ -266,6 +268,7 @@ test("the detached cell exposes a controller so it can be cancelled later", asyn
 });
 
 test("ensure() patches the manager prototype it returns and marks it ready", async () => {
+  resetYieldRouting(); // worker-level routing is module state; start from a clean worker
   const runtime = testRuntime();
   const { proto, manager } = makeManager(() => never());
   const provisionerProto = {
@@ -307,6 +310,7 @@ test("fails loudly when the Prime Agent runtime method is unavailable", () => {
 });
 
 test("a broken KernelManager shape degrades to stock behaviour instead of breaking ensure()", async () => {
+  resetYieldRouting(); // otherwise an earlier test's runtime owns the worker fallback
   const errors = [];
   const runtime = createYieldRuntime({ yieldMs: 20, minYieldMs: 1, onError: (e) => errors.push(e) });
   const manager = Object.create({}); // no execute(): shape we cannot patch
@@ -361,8 +365,12 @@ test("two sessions on one worker do not share a detached-cell registry", async (
   provisionerB.options = { sessionId: "session-B" };
 
   resetYieldRouting();
-  installIpythonYield(provisionerProto, runtimeA, { sessionId: "session-A" });
-  installIpythonYield(provisionerProto, runtimeB, { sessionId: "session-B" });
+  // Exactly what index.js does: install with no id at activation, then bind the
+  // session id later, when session_start finally provides one.
+  installIpythonYield(provisionerProto, runtimeA);
+  installIpythonYield(provisionerProto, runtimeB);
+  assert.equal(registerYieldSession(runtimeA, "session-A"), true);
+  assert.equal(registerYieldSession(runtimeB, "session-B"), true);
 
   try {
     await provisionerA.ensure();
@@ -399,6 +407,57 @@ test("two sessions on one worker do not share a detached-cell registry", async (
     restoreIpythonYield(provisionerProto);
     restoreIpythonYield(protoA);
     restoreIpythonYield(protoB);
+    resetYieldRouting();
+  }
+});
+
+test("a second session activating without an id is reported, not silently misrouted", () => {
+  const provisionerProto = { async ensure() { return this._manager; } };
+  const errorsA = [];
+  const errorsB = [];
+  const runtimeA = createYieldRuntime({ yieldMs: 20, minYieldMs: 1, onError: (e) => errorsA.push(e) });
+  const runtimeB = createYieldRuntime({ yieldMs: 20, minYieldMs: 1, onError: (e) => errorsB.push(e) });
+
+  resetYieldRouting();
+  try {
+    installIpythonYield(provisionerProto, runtimeA);
+    assert.equal(isFallbackContested(), false);
+
+    installIpythonYield(provisionerProto, runtimeB);
+    assert.equal(isFallbackContested(), true, "a shared prototype cannot distinguish the two");
+    assert.equal(errorsB.length, 1);
+    assert.match(errorsB[0].message, /second session activated without a session id/);
+    assert.equal(errorsA.length, 0, "the first session keeps working and stays quiet");
+  } finally {
+    restoreIpythonYield(provisionerProto);
+    resetYieldRouting();
+  }
+});
+
+test("re-provisioning the first session after a second one activates still routes to the first", async () => {
+  // The regression that a prototype-keyed table introduced: A activates, B
+  // activates later, then A's kernel restarts and its FRESH provisioner routed
+  // to B, filing A's cells in B's registry.
+  const provisionerProto = { async ensure() { return this._manager; } };
+  const runtimeA = testRuntime();
+  const runtimeB = testRuntime();
+  const { proto: protoA, manager: managerA } = makeManager(async () => okResult("A ran"));
+
+  resetYieldRouting();
+  try {
+    installIpythonYield(provisionerProto, runtimeA);
+    installIpythonYield(provisionerProto, runtimeB);
+
+    // A's kernel restarts: a brand-new provisioner instance, never pinned.
+    const reprovisionedA = Object.create(provisionerProto);
+    reprovisionedA._manager = managerA;
+    await reprovisionedA.ensure();
+
+    assert.equal(runtimeA.isReady(managerA), true, "A's manager must belong to A");
+    assert.equal(runtimeB.isReady(managerA), false, "and must not leak into B");
+  } finally {
+    restoreIpythonYield(provisionerProto);
+    restoreIpythonYield(protoA);
     resetYieldRouting();
   }
 });

@@ -37,10 +37,22 @@ export const PATCH_STATE = Symbol.for("prime-toolbox:ipython-yield");
  */
 const runtimesBySession = new Map();
 const runtimesByProvisioner = new WeakMap();
-const runtimesByProvisionerPrototype = new WeakMap();
 const runtimesByManager = new WeakMap();
-/** Last resort for a host that exposes no session id: preserves single-session behaviour. */
+/**
+ * Last resort for a host that exposes no session id.
+ *
+ * FIRST install wins, deliberately. A provisioner prototype is shared by every
+ * session in the worker and therefore carries no routing information, so keying
+ * off it would mean LAST install wins: session A works until its kernel
+ * restarts, and the fresh provisioner then routes A's cells into the registry of
+ * whichever session activated most recently. First-install-wins instead keeps
+ * the oldest session correct for its whole life and makes later sessions fail
+ * immediately and loudly (see `reportUnroutableRuntime`) rather than silently
+ * later.
+ */
 let fallbackRuntime;
+/** True once a second runtime installs with no session id to distinguish it. */
+let fallbackContested = false;
 
 function sessionIdOf(provisioner) {
   if (!provisioner || typeof provisioner !== "object") return undefined;
@@ -51,32 +63,107 @@ function sessionIdOf(provisioner) {
 }
 
 function registerRuntime(runtime, sessionId) {
-  if (!fallbackRuntime) fallbackRuntime = runtime;
+  if (!fallbackRuntime) {
+    fallbackRuntime = runtime;
+  } else if (!sessionId && runtime !== fallbackRuntime) {
+    // A second session activated without an id to route by. Anything this
+    // runtime owns will be misfiled under the first one, so say so once instead
+    // of corrupting bookkeeping quietly.
+    fallbackContested = true;
+    reportUnroutableRuntime(runtime);
+  }
   if (sessionId) runtimesBySession.set(sessionId, runtime);
   return runtime;
+}
+
+/**
+ * Bind a runtime to its session id once the host can tell us what it is.
+ *
+ * Activation happens before any session context exists, so `index.js` calls
+ * this from `session_start` with `ctx.sessionManager.getSessionId()`. Without
+ * it `runtimesBySession` stays empty in production and every lookup falls to
+ * `fallbackRuntime`, which is first-install-wins for the whole worker.
+ */
+export function registerYieldSession(runtime, sessionId) {
+  if (!runtime || typeof sessionId !== "string" || !sessionId) return false;
+  runtimesBySession.set(sessionId, runtime);
+  return true;
+}
+
+function reportUnroutableRuntime(runtime) {
+  try {
+    runtime.onError(
+      new Error(
+        "ipython-yield: a second session activated without a session id, so its detached cells, " +
+          "attach/cancel lookups and completion wakes will be routed to the first session. " +
+          "Pass { sessionId } to installIpythonYield to isolate sessions.",
+      ),
+    );
+  } catch {
+    // Reporting must never break activation.
+  }
 }
 
 function runtimeForProvisioner(provisioner) {
   const pinned = runtimesByProvisioner.get(provisioner);
   if (pinned) return pinned;
-  // Session id first: in a worker the provisioner prototype is shared, so only
-  // the id distinguishes sessions. The prototype is the next best key when a
-  // host exposes no id, and beats fallbackRuntime because that one is
-  // first-install-wins for the whole worker.
-  const runtime =
-    runtimesBySession.get(sessionIdOf(provisioner)) ??
-    runtimesByProvisionerPrototype.get(Object.getPrototypeOf(provisioner ?? {})) ??
-    fallbackRuntime;
-  if (runtime && provisioner && typeof provisioner === "object") {
-    runtimesByProvisioner.set(provisioner, runtime);
+  // Only the session id is a trustworthy key: the provisioner prototype is
+  // shared by the whole worker and carries no routing information.
+  const bySession = runtimesBySession.get(sessionIdOf(provisioner));
+  if (bySession && provisioner && typeof provisioner === "object") {
+    // Cache only a resolved answer. Caching the fallback would freeze a GUESS
+    // onto this provisioner, which never recovers if the host assigns its
+    // session id lazily, after the first ensure().
+    runtimesByProvisioner.set(provisioner, bySession);
+    return bySession;
   }
-  return runtime;
+  return bySession ?? fallbackRuntime;
 }
 
-/** Test seam: drop worker-level routing so a suite can install a fresh set of runtimes. */
+/**
+ * Test seam: drop worker-level routing so a suite can install a fresh set of
+ * runtimes.
+ *
+ * `runtimesByProvisioner` and `runtimesByManager` are WeakMaps and cannot be
+ * cleared, but they are keyed by provisioner/manager instances: a suite that
+ * builds fresh instances per test can never observe a stale entry, and a suite
+ * that reuses them across resets would be asserting on a stale pin anyway.
+ */
 export function resetYieldRouting() {
   runtimesBySession.clear();
   fallbackRuntime = undefined;
+  fallbackContested = false;
+  mismatchReported = false;
+}
+
+let mismatchReported = false;
+
+/**
+ * Detect the failure this design is most exposed to: the host labels the
+ * provisioner with one id scheme while `session_start` registered another. The
+ * lookup then misses and routing silently falls back, so say it once.
+ */
+function reportSessionKeyMismatch(provisioner, runtime) {
+  if (mismatchReported) return;
+  const id = sessionIdOf(provisioner);
+  if (!id || runtimesBySession.has(id)) return;
+  mismatchReported = true;
+  try {
+    runtime.onError(
+      new Error(
+        `ipython-yield: provisioner reports session "${id}", which no activation registered. ` +
+          "Session routing is falling back to the first-installed runtime; the id passed to " +
+          "registerYieldSession does not match the one the kernel provisioner carries.",
+      ),
+    );
+  } catch {
+    // Reporting must never break the kernel.
+  }
+}
+
+/** Whether a second unroutable runtime has installed; surfaced for tests. */
+export function isFallbackContested() {
+  return fallbackContested;
 }
 
 const ENSURE_METHOD = "ensure";
@@ -168,15 +255,18 @@ export function installKernelExecuteYield(prototype, runtime) {
 
   async function patchedExecute(code, opts = {}) {
     const options = opts ?? {};
-    // Resolved per call, not captured: this prototype is shared by every
-    // session in the worker (see the routing tables above).
-    const runtime = runtimesByManager.get(this) ?? fallbackRuntime;
-    if (!runtime) return original.call(this, code, options);
-    const { registry } = runtime;
+    // Resolved per call, never captured: this prototype is shared by every
+    // session in the worker, so the installing runtime is NOT necessarily the
+    // one that owns this manager (see the routing tables above). Deliberately
+    // named `owner`, not `runtime` -- shadowing the installer's parameter is
+    // what made the cross-session bug invisible in the first place.
+    const owner = runtimesByManager.get(this) ?? fallbackRuntime;
+    if (!owner) return original.call(this, code, options);
+    const { registry } = owner;
 
     // Startup, snapshot/restore and namespace listing must behave exactly as
     // before -- they are host bookkeeping, not model-issued work.
-    if (options.internal || !runtime.isReady(this)) {
+    if (options.internal || !owner.isReady(this)) {
       return original.call(this, code, options);
     }
 
@@ -184,9 +274,9 @@ export function installKernelExecuteYield(prototype, runtime) {
     // execution queue would block this call for the detached cell's full
     // remaining lifetime, which is the exact failure this package removes.
     const active = registry.active();
-    if (active) return busyResult(active, runtime.maxChars());
+    if (active) return busyResult(active, owner.maxChars());
 
-    const yieldMs = runtime.yieldMs();
+    const yieldMs = owner.yieldMs();
     if (!(yieldMs > 0)) return original.call(this, code, options);
 
     const cell = registry.create(code);
@@ -237,8 +327,10 @@ export function installKernelExecuteYield(prototype, runtime) {
 
     let timer;
     const yielded = new Promise((resolve) => {
+      // Not unref'd, for the same reason as waitForSettle's timer: this one is
+      // half of a Promise.race the tool call is awaiting, and it is cleared the
+      // moment the race resolves.
       timer = setTimeout(() => resolve(YIELD), yieldMs);
-      if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
     });
 
     const winner = await Promise.race([settled.then((r) => ({ result: r }), (e) => ({ error: e })), yielded]);
@@ -253,7 +345,7 @@ export function installKernelExecuteYield(prototype, runtime) {
     if (cell.state !== "running") return settled;
 
     registry.markDetached(cell);
-    return detachedResult(cell, runtime.maxChars());
+    return detachedResult(cell, owner.maxChars());
   }
 
   Object.defineProperty(prototype, EXECUTE_METHOD, { ...descriptor, value: patchedExecute });
@@ -276,9 +368,6 @@ export function installIpythonYield(prototype, runtime, options = {}) {
   // Register unconditionally: a later session must not be discarded just
   // because an earlier one already patched the shared prototype.
   registerRuntime(runtime, options.sessionId);
-  if (prototype && typeof prototype === "object") {
-    runtimesByProvisionerPrototype.set(prototype, runtime);
-  }
   if (prototype?.[PATCH_STATE]?.[ENSURE_METHOD]) return "already-installed";
   const descriptor = assertPatchable(prototype, ENSURE_METHOD, "IpythonKernelProvisioner");
   const original = descriptor.value;
@@ -288,6 +377,7 @@ export function installIpythonYield(prototype, runtime, options = {}) {
     if (manager && typeof manager === "object") {
       // Whichever session owns this provisioner owns the manager it returns.
       const owner = runtimeForProvisioner(this) ?? runtime;
+      reportSessionKeyMismatch(this, owner);
       try {
         installKernelExecuteYield(Object.getPrototypeOf(manager), owner);
       } catch (error) {

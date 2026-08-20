@@ -11,7 +11,7 @@
 
 import { IpythonKernelProvisioner } from "@earendil-works/pi-coding-agent";
 
-import { createYieldRuntime, installIpythonYield } from "./patch.js";
+import { createYieldRuntime, installIpythonYield, registerYieldSession } from "./patch.js";
 import { createSettleNotice } from "./notice.js";
 import { createAttachTool, createCancelTool } from "./tools.js";
 
@@ -34,6 +34,18 @@ export default function ipythonYieldExtension(pi) {
 
   installIpythonYield(IpythonKernelProvisioner.prototype, runtime);
 
+  // A worker hosts several sessions on ONE shared provisioner prototype, so the
+  // session id is the only thing that can route a detached cell back to the
+  // session that ran it. It does not exist yet at activation, so bind it as soon
+  // as the host has a session: getSessionId() is part of the public
+  // ReadonlySessionManager surface.
+  pi.on("session_start", (_event, ctx) => {
+    const sessionId = ctx.sessionManager?.getSessionId?.();
+    if (!registerYieldSession(runtime, sessionId)) {
+      runtime.onError(new Error("ipython-yield: no session id available; sessions cannot be isolated"));
+    }
+  });
+
   pi.registerTool(createAttachTool(runtime));
   pi.registerTool(createCancelTool(runtime));
 
@@ -45,6 +57,9 @@ export default function ipythonYieldExtension(pi) {
     createSettleNotice({
       maxChars: () => runtime.maxChars(),
       send: (message) => pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" }),
+      // Only attach and cancel pruned before, so a session that always lets the
+      // wake deliver -- the pattern we tell the model to use -- never pruned.
+      prune: () => runtime.registry.prune(),
     }),
   );
 }
